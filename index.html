@@ -1,509 +1,291 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  RotateCcw, 
-  ChevronRight, 
-  Compass, 
-  Moon as MoonIcon, 
-  LayoutGrid, 
-  Zap, 
-  Eye,
-  Sparkles,
-  Globe,
-  Star,
-  Undo2
-} from 'lucide-react';
-
-// === 配置与常量 ===
-const apiKey = ""; 
-const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
-const TAROT_DECK = Array.from({ length: 78 }, (_, i) => i);
-const TAROT_NAMES = [
-  "愚者", "魔术师", "女祭司", "皇后", "皇帝", "教皇", "恋人", "战车", "力量", "隐士", "命运之轮", "正义", "倒吊人", "死神", "节制", "恶魔", "高塔", "星星", "月亮", "太阳", "审判", "世界",
-  ...["权杖", "圣杯", "宝剑", "星币"].flatMap(suit => 
-    ["Ace", "2", "3", "4", "5", "6", "7", "8", "9", "10", "侍从", "骑士", "王后", "国王"].map(val => `${suit}${val}`)
-  )
-];
-
-const TOOLS = {
-  tarot: { id: 'tarot', name: '塔罗占卜', icon: LayoutGrid, slots: ["缘起", "当前", "趋向"] },
-  dice: { id: 'dice', name: '星相骰子', icon: Compass, planets: ["太阳", "月亮", "水星", "金星", "火星", "木星", "土星", "天王星", "海王星", "冥王星", "北交点", "南交点"], signs: ["白羊", "金牛", "双子", "巨蟹", "狮子", "处女", "天秤", "天蝎", "射手", "摩羯", "水瓶", "双鱼"] },
-  shengbei: { id: 'shengbei', name: '圣杯求启', icon: MoonIcon },
-  iching: { id: 'iching', name: '六爻演化', icon: Zap }
-};
-
-const SUGGESTIONS_ROW1 = ["我该接受这份新工作的邀约吗？", "这段关系的未来走向会如何？", "下个月我的财务会有好转吗？"];
-const SUGGESTIONS_ROW2 = ["现在最需要关注的决策点在哪？", "TA对我的真实看法是什么？", "换一个城市生活是否更好？"];
-const SUGGESTIONS_ROW3 = ["当下的焦虑感从何而来？", "如何提升我目前的个人能量？", "在这个项目上我该坚持还是放手？"];
-
-// 六十四卦映射逻辑 (确保 64 个唯一键值，修复重复)
-const HEXAGRAM_NAMES = {
-  "111111": "乾为天", "000000": "坤为地", "100010": "水雷屯", "010001": "山水蒙", "111010": "水天需", "010111": "天水讼", "010000": "地水师", "000010": "水地比",
-  "111011": "风小畜", "110111": "天泽履", "111000": "地天泰", "000111": "天地否", "101111": "天火同人", "111101": "火天大有", "001000": "地山谦", "000100": "雷地豫",
-  "100110": "泽雷随", "011001": "山风蛊", "110000": "地泽临", "000011": "风地观", "101001": "火雷噬嗑", "100101": "山火贲", "000001": "山地剥", "100000": "地雷复",
-  "100111": "天雷无妄", "111001": "山天大畜", "100001": "山雷颐", "011110": "泽风大过", "010010": "坎为水", "101101": "离为火", "001110": "泽山咸", "011100": "雷风恒",
-  "001111": "天山遁", "111100": "雷天大壮", "000101": "火地晋", "101000": "地火明夷", "110101": "风火家人", "101011": "火泽睽", "001010": "水山蹇", "010100": "雷水解",
-  "110001": "山泽损", "100011": "风雷益", "111110": "泽天夬", "011111": "天风姤", "011000": "泽地萃", "000110": "地风升", "011010": "泽水困", "010110": "水风井",
-  "101110": "泽火革", "011101": "火风鼎", "100100": "震为雷", "001001": "艮为山", "001011": "风山渐", "110100": "雷泽归妹", "101100": "雷火丰", "001101": "火山旅",
-  "011011": "巽为风", "110110": "兑为泽", "010011": "风水涣", "110010": "水泽节", "110011": "风泽中孚", "001100": "雷山小过", "101010": "水火既济", "010101": "火水未济"
-};
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-export default function App() {
-  const [step, setStep] = useState(1);
-  const [question, setQuestion] = useState('');
-  const [selectedToolId, setSelectedToolId] = useState('tarot');
-  const [isLoading, setIsLoading] = useState(false); // 修复: 定义 isLoading
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [interpretation, setInterpretation] = useState('');
-
-  // 占卜交互状态
-  const [interactionState, setInteractionState] = useState('idle');
-  const [tarotIndices, setTarotIndices] = useState([]);
-  const [selectedTarot, setSelectedTarot] = useState([]);
-  const [diceResults, setDiceResults] = useState(null);
-  const [shengbeiResults, setShengbeiResults] = useState(null);
-  const [ichingYao, setIchingYao] = useState([]);
-  const [isCasting, setIsCasting] = useState(false);
-  const [currentCoins, setCurrentCoins] = useState([true, true, true]);
-
-  // 重置思绪逻辑
-  const resetThought = () => {
-    setQuestion('');
-    setStep(1);
-    setInteractionState('idle');
-    setInterpretation('');
-    setSelectedTarot([]);
-    setDiceResults(null);
-    setShengbeiResults(null);
-    setIchingYao([]);
-    setIsLoading(false);
-    setIsAnalyzing(false);
-  };
-
-  const autoRecommend = (q) => {
-    const ichingKeywords = ['工作', '事业', '钱', '财务', '项目', '职位', '辞职', '创业'];
-    const tarotKeywords = ['他', '她', 'TA', '感情', '关系', '心', '爱', '梦', '性格'];
-    if (ichingKeywords.some(k => q.includes(k))) return 'iching';
-    if (tarotKeywords.some(k => q.includes(k))) return 'tarot';
-    return 'dice';
-  };
-
-  const initToolInteraction = useCallback((toolId) => {
-    setInteractionState('interacting');
-    setInterpretation('');
-    if (toolId === 'tarot') {
-      setTarotIndices([...TAROT_DECK].sort(() => Math.random() - 0.5));
-      setSelectedTarot([]);
-    } else if (toolId === 'dice') {
-      setDiceResults(null);
-    } else if (toolId === 'shengbei') {
-      setShengbeiResults(null);
-    } else if (toolId === 'iching') {
-      setIchingYao([]);
-    }
-  }, []);
-
-  const handleStartInput = () => {
-    if (!question.trim()) return;
-    setSelectedToolId(autoRecommend(question));
-    setStep(2);
-  };
-
-  const handleSelectTarot = async (idxInDeck) => {
-    if (selectedTarot.length >= 3) return;
-    const cardIdx = tarotIndices[idxInDeck];
-    const newCard = { deckIdx: idxInDeck, name: TAROT_NAMES[cardIdx], side: Math.random() > 0.5 ? '正位' : '逆位', flipped: false };
-    const newList = [...selectedTarot, newCard];
-    setSelectedTarot(newList);
-    if (newList.length === 3) {
-      await sleep(600);
-      for(let i=0; i<3; i++) {
-        await sleep(400);
-        setSelectedTarot(prev => {
-          const updated = [...prev];
-          updated[i].flipped = true;
-          return updated;
-        });
-      }
-      setInteractionState('ready-to-analyze');
-    }
-  };
-
-  const handleGenerateInterpretation = async () => {
-    setIsAnalyzing(true);
-    let resultString = "";
-    if (selectedToolId === 'tarot') resultString = selectedTarot.map((c, i) => `${TOOLS.tarot.slots[i]}:${c.name}(${c.side})`).join(', ');
-    else if (selectedToolId === 'dice') resultString = `星曜:${TOOLS.dice.planets[diceResults.p]} / 领域:${TOOLS.dice.signs[diceResults.s]} / 宫位:${diceResults.h + 1}宫`;
-    else if (selectedToolId === 'shengbei') resultString = shengbeiResults.b1 !== shengbeiResults.b2 ? "圣杯" : (shengbeiResults.b1 ? "笑杯" : "阴杯");
-    else if (selectedToolId === 'iching') resultString = `卦象:${HEXAGRAM_NAMES[ichingYao.map(y=>(y.type.includes('阳')?'1':'0')).join('')] || '未知'}`;
-
-    try {
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `问题：${question}\n结果：${resultString}\n请作为朋友般的疗愈师。第一段先给出一句温柔的判语。接着分“1. 结果解析”和“2. 行动建议”两部分回答。严禁使用“亲爱的”和“您”。字数控制在250字以内。` }] }],
-          systemInstruction: { parts: [{ text: "你是资深星空智者。语气温柔，直接回答。禁止 Markdown 符号。禁止使用“亲爱的”和“您”。" }] }
-        })
-      });
-      const data = await response.json();
-      setInterpretation((data.candidates?.[0]?.content?.parts?.[0]?.text || "宇宙已回响。").replace(/\*\*/g, '').replace(/[\[\]]/g, '').trim());
-      setInteractionState('completed');
-    } catch (e) {
-      setInterpretation("能量涟漪波动，请重新开启感应。");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const castSingleYao = async () => {
-    if (isCasting || ichingYao.length >= 6) return;
-    setIsCasting(true);
-    let toss = [];
-    for (let i = 0; i < 10; i++) {
-      toss = [Math.random() > 0.5, Math.random() > 0.5, Math.random() > 0.5];
-      setCurrentCoins(toss);
-      await sleep(60);
-    }
-    const heads = toss.filter(c => c).length;
-    let type = heads === 3 ? '老阳' : heads === 0 ? '老阴' : heads === 2 ? '少阴' : '少阳';
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星空占卜 - 寻求宇宙的答案</title>
     
-    setIchingYao(prev => {
-        const next = [...prev, { type, coins: toss }];
-        if (next.length === 6) {
-            setInteractionState('ready-to-analyze');
-        }
-        return next;
-    });
-    setIsCasting(false);
-  };
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide-react@latest"></script>
 
-  const castSixTimes = async () => {
-    if (isCasting || ichingYao.length >= 6) return;
-    const remaining = 6 - ichingYao.length;
-    for(let i=0; i < remaining; i++) {
-        await castSingleYao();
-        if (i < remaining - 1) await sleep(800); // 让用户看清起卦
-    }
-  };
-
-  return (
-    <div className="h-screen w-full bg-[#03030d] text-[#f1f5f9] flex flex-col items-center justify-center p-4 overflow-hidden relative font-sans selection:bg-indigo-500/40">
-      
-      {/* 视觉层 */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
-        <div className="absolute inset-0 bg-gradient-to-b from-[#050515] via-[#0d0d26] to-[#050515]"></div>
-        <div className="absolute top-[8%] right-[10%] w-[40vw] h-[40vw] rounded-full bg-gradient-to-br from-indigo-100/10 via-indigo-300/5 to-transparent blur-[80px] opacity-70"></div>
-        <div className="star-field opacity-100 scale-125"></div>
-      </div>
-
-      <div className="w-full max-w-xl flex flex-col items-center gap-[1.5vh] z-10 h-full justify-center">
-        
-        <header className={`text-center transition-all duration-1000 ${interpretation ? 'h-0 opacity-0 overflow-hidden' : 'mb-1'}`}>
-          <h1 className="text-[clamp(1.5rem,5vw,2.2rem)] font-extralight tracking-[0.4em] text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.4)] uppercase">
-            让宇宙告诉你答案
-          </h1>
-          <div className="h-[1px] w-48 bg-gradient-to-r from-transparent via-white/20 to-transparent mx-auto mt-4"></div>
-        </header>
-
-        {/* 悬浮容器 */}
-        <div className={`w-full bg-[#0a0a20]/50 border border-white/[0.1] rounded-[48px] backdrop-blur-[60px] shadow-[0_40px_120px_rgba(0,0,0,0.7)] relative flex flex-col transition-all duration-700 ${interpretation ? 'h-[92vh]' : 'h-[85vh] md:h-[82vh]'} overflow-hidden`}>
-          
-          <div className="flex-1 p-[clamp(1rem,4vw,2.5rem)] flex flex-col relative overflow-hidden h-full">
-            
-            {/* Step 1 */}
-            {step === 1 && (
-              <div className="flex flex-col h-full animate-in fade-in slide-in-from-bottom-6 duration-700 w-full overflow-hidden">
-                <div className="flex-1 flex flex-col justify-center space-y-4 md:space-y-6">
-                  <p className="text-[clamp(0.75rem,2vw,0.85rem)] tracking-[0.8em] text-indigo-300/50 uppercase font-light text-center">在静默中寻求因果</p>
-                  <textarea
-                    className="w-full bg-black/30 border border-white/[0.05] rounded-[32px] p-6 md:p-8 text-center text-[clamp(1.2rem,2.8vw,1.5rem)] font-extralight focus:border-indigo-400/60 focus:bg-white/[0.02] transition-all outline-none resize-none h-[25vh] leading-relaxed placeholder:text-white/10"
-                    placeholder="请在沉思后，输入你的问题..."
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                  />
-                </div>
-                
-                <div className="w-full overflow-hidden flex flex-col gap-2.5 py-4 mt-auto">
-                  {[SUGGESTIONS_ROW1, SUGGESTIONS_ROW2, SUGGESTIONS_ROW3].map((row, idx) => (
-                    <div key={idx} className={`flex gap-3 h-11 items-center ${idx === 1 ? 'animate-marquee-reverse' : 'animate-marquee-fast'} group`}>
-                      {[...row, ...row].map((s, i) => (
-                        <button key={i} onClick={() => setQuestion(s)} className="whitespace-nowrap h-full px-5 flex items-center rounded-full bg-white/[0.04] border border-white/[0.08] text-[clamp(0.85rem,1.5vw,0.95rem)] text-white/50 hover:text-white hover:border-indigo-400 transition-all font-light">{s}</button>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-
-                <button
-                  disabled={!question.trim()}
-                  onClick={handleStartInput}
-                  className="w-full h-20 md:h-24 flex items-center justify-center bg-white text-[#0a0a35] rounded-full font-bold text-[clamp(1.1rem,2vw,1.3rem)] tracking-[0.4em] transition-all active:scale-95 shadow-xl mt-4"
-                >
-                  开始提问 <ChevronRight size={22} />
-                </button>
-              </div>
-            )}
-
-            {/* Step 2: 体系选择 (优化：缩小方格高度) */}
-            {step === 2 && (
-              <div className="flex flex-col h-full animate-in fade-in zoom-in-95 duration-500 text-center w-full overflow-hidden">
-                <div className="flex-1 flex flex-col justify-center gap-4 md:gap-6 pt-1">
-                   <p className="text-[clamp(0.7rem,1.5vw,0.8rem)] text-indigo-300/40 tracking-[0.6em] uppercase font-light">已感应你的思绪</p>
-                   <h2 className="text-[clamp(1.1rem,2.2vw,1.35rem)] font-light text-white/90 leading-relaxed italic px-8 line-clamp-2">“ {question} ”</h2>
-                   
-                   <div className="grid grid-cols-2 gap-3 md:gap-4 px-1 md:px-4">
-                    {Object.values(TOOLS).map((tool) => (
-                      <button
-                        key={tool.id}
-                        onClick={() => setSelectedToolId(tool.id)}
-                        className={`relative py-4 md:py-6 px-4 rounded-[36px] border transition-all duration-500 flex flex-col items-center gap-2 group ${selectedToolId === tool.id ? 'border-white/60 bg-white/10 shadow-[0_0_40px_rgba(255,255,255,0.1)]' : 'border-white/5 opacity-40 hover:opacity-100 hover:bg-white/5'}`}
-                      >
-                        <tool.icon size={28} strokeWidth={1.2} className={selectedToolId === tool.id ? 'text-white' : 'text-white/40'} />
-                        <span className="text-[clamp(0.85rem,1.5vw,0.95rem)] font-light tracking-[0.2em]">{tool.name}</span>
-                        {selectedToolId === tool.id && <div className="absolute top-3 right-5 w-1 h-1 bg-white rounded-full animate-pulse"></div>}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="mt-6 flex flex-col gap-4 pb-2">
-                  <button onClick={() => { initToolInteraction(selectedToolId); setStep(3); }} className="w-full h-20 md:h-24 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-[clamp(1.1rem,2vw,1.3rem)] font-bold tracking-[0.4em] transition-all shadow-xl active:scale-95">开始占卜</button>
-                  <button onClick={resetThought} className="text-[clamp(0.85rem,1.5vw,0.95rem)] text-white/30 hover:text-white transition-all uppercase tracking-[0.4em] font-light py-2">重新调整思绪</button>
-                </div>
-              </div>
-            )}
-
-            {/* Step 3 */}
-            {step === 3 && (
-              <div className={`flex flex-col items-center transition-all duration-1000 flex-1 w-full overflow-hidden ${interpretation || isAnalyzing ? 'pt-1' : 'justify-center'}`}>
-                
-                {/* 1. Tarot (放大牌堆交互) */}
-                {selectedToolId === 'tarot' && (
-                  <div className={`w-full flex flex-col items-center transition-all duration-700 ${interpretation || isAnalyzing ? 'scale-[0.65] origin-top h-[20vh] mb-0 pt-2' : 'h-full justify-center'}`}>
-                    {(selectedTarot.length < 3 && !interpretation && !isAnalyzing) && (
-                      <p className="text-[clamp(0.9rem,1.8vw,1.1rem)] tracking-[0.2em] text-indigo-100/70 italic mb-4 text-center animate-pulse">按直觉抽出三张牌...</p>
-                    )}
-                    {interactionState === 'interacting' && (
-                      <div className={`relative w-full flex justify-center transition-all duration-700 ${selectedTarot.length === 3 ? 'h-0 opacity-0 mb-0 pointer-events-none' : 'h-[32vh] mb-12 mt-4'}`}>
-                        {tarotIndices.map((idx, i) => (
-                          <button
-                            key={i}
-                            disabled={selectedTarot.length >= 3}
-                            onClick={() => handleSelectTarot(i)}
-                            className={`absolute w-16 h-24 md:w-20 md:h-30 rounded-lg border border-white/10 bg-[#151535] transition-all duration-700 shadow-xl ${selectedTarot.some(c => c.deckIdx === i) ? 'opacity-0 scale-50' : 'hover:-translate-y-12 active:scale-95'}`}
-                            style={{ left: `calc(50% - 2.5rem + ${(i - 39) * 3.5}px)`, transform: `rotate(${(i - 39) * 1.5}deg)`, zIndex: i }}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    <div className="flex justify-center gap-6 items-center w-full">
-                      {[0, 1, 2].map(i => (
-                        <div key={i} className="flex flex-col gap-2 items-center">
-                          <div className="w-24 h-38 md:w-30 md:h-48 rounded-2xl border border-indigo-500/20 bg-black/50 relative perspective-1000 shadow-2xl">
-                            {selectedTarot[i] ? (
-                              <div className={`w-full h-full transition-all duration-1000 preserve-3d ${selectedTarot[i].flipped ? 'rotate-y-180' : ''}`}>
-                                <div className="absolute inset-0 backface-hidden flex items-center justify-center bg-[#1a1a45] rounded-2xl"><Sparkles size={24} className="text-indigo-300/30" /></div>
-                                <div className="absolute inset-0 backface-hidden rotate-y-180 bg-gradient-to-br from-[#121235] via-[#1a1a40] to-[#02020a] border-2 border-amber-600/30 rounded-2xl p-4 flex flex-col justify-between items-center text-center">
-                                  <span className="text-[8px] font-bold text-amber-500/60 uppercase">{TOOLS.tarot.slots[i]}</span>
-                                  <div className="text-[14px] font-medium text-amber-50 leading-tight">{selectedTarot[i].name}</div>
-                                  <div className={`text-[8px] px-2 py-0.5 rounded-full border border-orange-400/40 text-orange-200`}>{selectedTarot[i].side}</div>
-                                </div>
-                              </div>
-                            ) : <div className="absolute inset-0 border border-dashed border-indigo-400/10 rounded-2xl flex items-center justify-center opacity-30"><Eye size={24} className="text-white" /></div>}
-                          </div>
-                          {!interpretation && !isAnalyzing && <span className="text-[9px] text-white/30 uppercase tracking-tighter">{TOOLS.tarot.slots[i]}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 2. Dice */}
-                {selectedToolId === 'dice' && (
-                   <div className={`flex flex-col items-center transition-all duration-700 ${interpretation || isAnalyzing ? 'scale-[0.65] origin-top h-[18vh] mb-0 pt-4' : 'gap-10 py-4 w-full text-center'}`}>
-                      <div className="flex gap-14 h-24 items-center">
-                        {[0,1,2].map(i => (
-                          <div key={i} className="relative orb-container">
-                             <div className={`orb-halo ${isLoading ? 'orb-halo-spinning active' : ''}`}></div>
-                             <div className="orb-inner">
-                                {diceResults && !isLoading ? (
-                                  <div className="text-[13px] text-indigo-50 font-light animate-in zoom-in">
-                                    {i === 0 && TOOLS.dice.planets[diceResults.p]}
-                                    {i === 1 && TOOLS.dice.signs[diceResults.s]}
-                                    {i === 2 && `${diceResults.h + 1}宫`}
-                                  </div>
-                                ) : <div className="w-1.5 h-1.5 bg-indigo-300/40 rounded-full animate-pulse blur-[1px]"></div>}
-                             </div>
-                          </div>
-                        ))}
-                      </div>
-                      {interactionState === 'interacting' && (
-                        <button onClick={async () => { setIsLoading(true); await sleep(1500); setDiceResults({ p: Math.floor(Math.random()*12), s: Math.floor(Math.random()*12), h: Math.floor(Math.random()*12) }); setIsLoading(false); setInteractionState('ready-to-analyze'); }} className="px-12 py-5 bg-white/[0.08] border border-white/20 text-white rounded-full text-[15px] tracking-[0.4em] hover:bg-white/15 transition-all shadow-xl mt-4 uppercase">拨转星轨</button>
-                      )}
-                   </div>
-                )}
-
-                {/* 3. Shengbei */}
-                {selectedToolId === 'shengbei' && (
-                   <div className={`flex flex-col items-center transition-all duration-700 ${interpretation || isAnalyzing ? 'scale-[0.65] origin-top h-[18vh] mb-0 pt-4' : 'gap-10 py-10 w-full text-center'}`}>
-                      <div className="flex justify-center gap-16 h-28 items-center">
-                        {[1, 2].map(i => (
-                          <div key={i} className={`shengbei-3d ${isLoading ? 'shengbei-tossing' : (shengbeiResults ? (shengbeiResults[`b${i}`] ? 'shengbei-flat' : 'shengbei-convex') : '')}`}>
-                            <div className="shengbei-top"></div>
-                            <div className="shengbei-side"></div>
-                          </div>
-                        ))}
-                      </div>
-                      {shengbeiResults && !isAnalyzing && !interpretation && (
-                        <div className="animate-in fade-in px-10 py-4 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-[18px] tracking-[0.6em] text-indigo-100 shadow-[0_0_50px_rgba(79,70,229,0.3)]">
-                          {(shengbeiResults.b1 !== shengbeiResults.b2) ? '圣杯 · 大吉' : (shengbeiResults.b1 ? '笑杯 · 变数' : '阴杯 · 阻碍')}
-                        </div>
-                      )}
-                      {interactionState === 'interacting' && (
-                        <button onClick={async () => { setIsLoading(true); await sleep(1500); setShengbeiResults({ b1: Math.random() > 0.5, b2: Math.random() > 0.5 }); setIsLoading(false); setInteractionState('ready-to-analyze'); }} className="px-14 py-6 bg-white/[0.08] border border-white/20 text-white rounded-full text-[16px] tracking-[0.5em] hover:bg-white/15 transition-all shadow-2xl mt-4 font-light uppercase">抛掷感应</button>
-                      )}
-                   </div>
-                )}
-
-                {/* 4. Iching (高级能量爻条 + 一键按钮) */}
-                {selectedToolId === 'iching' && (
-                   <div className={`flex flex-col items-center transition-all duration-700 ${interpretation || isAnalyzing ? 'scale-[0.65] origin-top h-[20vh] mb-0 pt-2' : 'gap-8 w-full py-6 text-center'}`}>
-                      <div className="flex flex-col-reverse gap-3 min-h-[140px]">
-                         {Array.from({length:6}).map((_, i) => (
-                           <div key={i} className="flex items-center gap-6 group">
-                             <div className={`h-[10px] transition-all duration-1000 rounded-full relative overflow-hidden ${ichingYao[i] ? 'w-80 shadow-[0_0_30px_rgba(99,102,241,0.4)] border border-white/10' : 'w-80 border border-dashed border-white/10'}`}>
-                                {ichingYao[i]?.type === '少阳' && (
-                                   <div className="w-full h-full bg-gradient-to-r from-indigo-500 via-indigo-100 to-indigo-500 opacity-95 animate-shimmer" />
-                                )}
-                                {ichingYao[i]?.type === '少阴' && (
-                                   <div className="w-full h-full flex justify-between">
-                                      <div className="w-[45%] h-full bg-gradient-to-r from-indigo-600 to-indigo-400 opacity-80" />
-                                      <div className="w-[45%] h-full bg-gradient-to-l from-indigo-600 to-indigo-400 opacity-80" />
-                                   </div>
-                                )}
-                                {ichingYao[i]?.type === '老阳' && (
-                                   <div className="w-full h-full bg-white flex items-center justify-center relative shadow-[0_0_20px_white]">
-                                      <span className="text-[18px] text-[#0a0a35] font-black italic relative z-10 animate-ping absolute">×</span>
-                                      <span className="text-[18px] text-[#0a0a35] font-black italic relative z-10">×</span>
-                                   </div>
-                                )}
-                                {ichingYao[i]?.type === '老阴' && (
-                                   <div className="w-full h-full flex justify-between relative">
-                                      <div className="w-[45%] h-full bg-indigo-100 opacity-95" />
-                                      <div className="w-[45%] h-full bg-indigo-100 opacity-95" />
-                                      <div className="absolute inset-0 flex items-center justify-center text-[#0a0a35] text-[20px] font-black animate-pulse">○</div>
-                                   </div>
-                                )}
-                             </div>
-                             {!interpretation && !isAnalyzing && <span className="text-[10px] text-white/30 uppercase tracking-tighter">{i+1}</span>}
-                           </div>
-                         ))}
-                      </div>
-                      
-                      {interactionState === 'interacting' && ichingYao.length < 6 && (
-                        <div className="flex flex-col items-center gap-8 mt-4">
-                           <div className="flex gap-10">
-                              {currentCoins.map((heads, i) => <div key={i} className={`w-12 h-12 rounded-full border border-indigo-400/30 bg-indigo-950/40 flex items-center justify-center shadow-xl ${isCasting ? 'animate-coin-spin' : ''}`}><span className="text-sm font-bold opacity-80">{heads?'阳':'阴'}</span></div>)}
-                           </div>
-                           <div className="flex gap-4">
-                              <button onClick={castSingleYao} disabled={isCasting} className="px-10 py-5 bg-white/5 border border-white/20 rounded-full text-[15px] font-light hover:bg-white/10 transition-all uppercase">起爻 ({ichingYao.length}/6)</button>
-                              <button onClick={castSixTimes} disabled={isCasting} className="px-10 py-5 bg-indigo-600 border border-indigo-400 rounded-full text-[15px] font-bold shadow-xl transition-all uppercase active:scale-95">一键起卦</button>
-                           </div>
-                        </div>
-                      )}
-                      {ichingYao.length === 6 && !interpretation && !isAnalyzing && <div className="animate-in fade-in duration-1000 text-indigo-100 text-2xl tracking-[1em] font-extralight italic mt-2 drop-shadow-[0_0_20px_rgba(165,180,252,0.6)]">{HEXAGRAM_NAMES[ichingYao.map(y=>(y.type.includes('阳')?'1':'0')).join('')] || '意蕴深远'}</div>}
-                   </div>
-                )}
-
-                {/* 最终按钮：查看占卜结果 (统一大气尺寸) */}
-                {interactionState === 'ready-to-analyze' && !isAnalyzing && (
-                  <div className="w-full px-4 animate-in fade-in slide-in-from-bottom-8 duration-700 flex flex-col items-center gap-6 mt-6 pb-6">
-                    <button onClick={handleGenerateInterpretation} className="w-full h-20 md:h-24 flex items-center justify-center bg-gradient-to-r from-indigo-800 via-white/80 to-purple-800 bg-[size:300%] animate-shimmer relative overflow-hidden rounded-[48px] p-[3px] group active:scale-95 transition-transform duration-500 shadow-xl">
-                      <div className="absolute inset-[3px] bg-[#0c0c28] rounded-[45px] group-hover:bg-transparent transition-colors duration-500" />
-                      <div className="relative z-10 text-white group-hover:text-[#0a0a1a] transition-colors duration-500 flex items-center justify-center gap-8 font-bold text-[clamp(1.1rem,2.2vw,1.3rem)] tracking-[0.8em] uppercase">
-                        <Globe size={28} className="animate-spin-slow opacity-80" /> 查看占卜结果
-                      </div>
-                    </button>
-                    <button onClick={resetThought} className="flex items-center gap-3 text-[13px] text-white/30 hover:text-white transition-all uppercase font-thin h-10"><Undo2 size={18} /> 重新调整思绪</button>
-                  </div>
-                )}
-
-                {/* 解析显示区域 (强制修复滚动逻辑) */}
-                {(interpretation || isAnalyzing) && (
-                  <div className="w-full animate-in fade-in slide-in-from-top-6 duration-1000 flex-1 flex flex-col overflow-hidden relative mt-2">
-                    {isAnalyzing && (
-                      <div className="absolute inset-0 bg-[#05051a]/60 backdrop-blur-xl z-50 flex flex-col items-center justify-center gap-10 rounded-[48px]">
-                         <div className="relative w-16 h-16 flex items-center justify-center">
-                            <div className="absolute inset-0 border-2 border-white/5 rounded-full scale-125 animate-pulse"></div>
-                            <div className="w-full h-full border-t-2 border-indigo-400 rounded-full animate-spin"></div>
-                         </div>
-                         <p className="text-[14px] tracking-[1.5em] text-white/80 uppercase animate-pulse font-light ml-[1.5em]">正在和宇宙连接...</p>
-                      </div>
-                    )}
-                    
-                    {/* 滚动容器关键配置：flex-1 + min-h-0 + overflow-y-auto */}
-                    <div className="flex-1 bg-black/40 border border-white/[0.08] rounded-[56px] shadow-[inset_0_0_80px_rgba(0,0,0,0.6)] flex flex-col mb-4 overflow-hidden min-h-0">
-                       <div className="flex-1 overflow-y-auto custom-scrollbar p-10 md:p-14 touch-pan-y overscroll-contain">
-                          <div className="text-[clamp(1.05rem,1.8vw,1.35rem)] font-extralight leading-[2.5] text-indigo-50/95 whitespace-pre-wrap text-justify tracking-[0.14em] italic pb-8">
-                            {interpretation}
-                          </div>
-                       </div>
-                    </div>
-
-                    {!isAnalyzing && (
-                       <button onClick={resetThought} className="mx-auto flex items-center gap-4 text-[14px] tracking-[0.8em] text-white/20 hover:text-white transition-all py-3 uppercase font-light"><RotateCcw size={20} className="group-hover:rotate-[-180deg] transition-transform duration-1000 opacity-60" /> 开启新的感应</button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <footer className="fixed bottom-6 opacity-30 text-[11px] tracking-[3em] uppercase font-thin pointer-events-none w-full text-center ml-[3em] z-0">Insight · Harmony · Future</footer>
-
-      <style dangerouslySetInnerHTML={{ __html: `
+    <style>
+        body { background-color: #03030d; margin: 0; overflow: hidden; }
         .star-field {
-          position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0;
-          background: radial-gradient(1.2px 1.2px at 20px 30px, #fff, rgba(0,0,0,0)), radial-gradient(1.5px 1.5px at 60px 100px, #fff, rgba(0,0,0,0)), radial-gradient(1px 1px at 150px 240px, #fff, rgba(0,0,0,0));
-          background-size: 250px 250px;
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0;
+            background: radial-gradient(1.2px 1.2px at 20px 30px, #fff, rgba(0,0,0,0)), 
+                        radial-gradient(1.5px 1.5px at 60px 100px, #fff, rgba(0,0,0,0)), 
+                        radial-gradient(1px 1px at 150px 240px, #fff, rgba(0,0,0,0));
+            background-size: 250px 250px;
         }
-        @keyframes nebula-slow { from { transform: rotate(0deg) scale(1); } to { transform: rotate(360deg) scale(1.15); } }
         @keyframes marquee { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
         .animate-marquee-fast { animation: marquee 35s linear infinite; }
-        .animate-marquee-slow { animation: marquee 50s linear infinite; }
         .animate-marquee-reverse { animation: marquee 40s linear infinite reverse; }
-
-        .orb-container { width: 84px; height: 84px; display: flex; align-items: center; justify-content: center; position: relative; }
         .orb-inner { width: 75%; height: 75%; background: radial-gradient(circle at 35% 35%, #1e1b4b, #02020a); border-radius: 50%; border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; backdrop-blur: 15px; z-index: 2; box-shadow: inset 0 0 20px rgba(0,0,0,0.6); }
-        .orb-halo { position: absolute; inset: 0px; border-radius: 50%; border: 2.5px solid transparent; border-top: 2.5px solid rgba(165,180,252,0.5); border-right: 1px solid rgba(165,180,252,0.1); animation: spin 5s linear infinite; opacity: 0.6; }
+        .orb-halo { position: absolute; inset: 0px; border-radius: 50%; border: 2.5px solid transparent; border-top: 2.5px solid rgba(165,180,252,0.5); animation: spin 5s linear infinite; opacity: 0.6; }
         .orb-halo-spinning.active { animation: spin 0.8s linear infinite !important; border-top-color: #fff !important; box-shadow: 0 0 40px rgba(165,180,252,0.6); }
-
         .shengbei-3d { position: relative; width: 100px; height: 50px; transform-style: preserve-3d; transition: all 1.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
         .shengbei-top { position: absolute; width: 100px; height: 50px; background: linear-gradient(to bottom, #37378f, #0d0d2b); border-radius: 100px 100px 0 0; border: 1px solid rgba(255,255,255,0.15); }
-        .shengbei-side { position: absolute; width: 100px; height: 10px; background: #000; top: 50px; transform: rotateX(-90deg); transform-origin: top; }
         .shengbei-tossing { animation: shengbei-anim 0.8s infinite alternate; }
         .shengbei-convex { transform: rotateX(0deg); }
         .shengbei-flat { transform: rotateX(180deg); }
         @keyframes shengbei-anim { 0% { transform: translateY(0) rotateX(0); } 100% { transform: translateY(-100px) rotateX(1440deg); } }
-        
-        @keyframes coin-spin { 0% { transform: rotateX(0deg) rotateY(0deg); } 100% { transform: rotateX(720deg) rotateY(1080deg); } }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
         .animate-spin-slow { animation: spin 10s linear infinite; }
         .animate-shimmer { animation: shimmer 4s linear infinite; }
-        
+        .perspective-1000 { perspective: 1500px; }
+        .preserve-3d { transform-style: preserve-3d; }
         .backface-hidden { backface-visibility: hidden; }
         .rotate-y-180 { transform: rotateY(180deg); }
-        .preserve-3d { transform-style: preserve-3d; }
-        .perspective-1000 { perspective: 1500px; }
-        
         .custom-scrollbar::-webkit-scrollbar { width: 5px; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 10px; }
-      ` }} />
-    </div>
-  );
-}
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef } = React;
+        const { RotateCcw, ChevronRight, Compass, Moon: MoonIcon, LayoutGrid, Zap, Eye, Sparkles, Globe, Star, Undo2 } = LucideReact;
+
+        // === 配置与常量 ===
+        const apiKey = ""; // <--- 在这里填入你的 Gemini API Key
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+        const TAROT_DECK = Array.from({ length: 78 }, (_, i) => i);
+        const TAROT_NAMES = ["愚者", "魔术师", "女祭司", "皇后", "皇帝", "教皇", "恋人", "战车", "力量", "隐士", "命运之轮", "正义", "倒吊人", "死神", "节制", "恶魔", "高塔", "星星", "月亮", "太阳", "审判", "世界", "权杖Ace", "权杖2", "权杖3", "权杖4", "权杖5", "权杖6", "权杖7", "权杖8", "权杖9", "权杖10", "权杖侍从", "权杖骑士", "权杖王后", "权杖国王", "圣杯Ace", "圣杯2", "圣杯3", "圣杯4", "圣杯5", "圣杯6", "圣杯7", "圣杯8", "圣杯9", "圣杯10", "圣杯侍从", "圣杯骑士", "圣杯王后", "圣杯国王", "宝剑Ace", "宝剑2", "宝剑3", "宝剑4", "宝剑5", "宝剑6", "宝剑7", "宝剑8", "宝剑9", "宝剑10", "宝剑侍从", "宝剑骑士", "宝剑王后", "宝剑国王", "星币Ace", "星币2", "星币3", "星币4", "星币5", "星币6", "星币7", "星币8", "星币9", "星币10", "星币侍从", "星币骑士", "星币王后", "星币国王"];
+
+        const TOOLS = {
+            tarot: { id: 'tarot', name: '塔罗占卜', icon: LayoutGrid, slots: ["缘起", "当前", "趋向"] },
+            dice: { id: 'dice', name: '星相骰子', icon: Compass, planets: ["太阳", "月亮", "水星", "金星", "火星", "木星", "土星", "天王星", "海王星", "冥王星", "北交点", "南交点"], signs: ["白羊", "金牛", "双子", "巨蟹", "狮子", "处女", "天秤", "天蝎", "射手", "摩羯", "水瓶", "双鱼"] },
+            shengbei: { id: 'shengbei', name: '圣杯求启', icon: MoonIcon },
+            iching: { id: 'iching', name: '六爻演化', icon: Zap }
+        };
+
+        const SUGGESTIONS = ["我该接受这份新工作的邀约吗？", "这段关系的未来走向会如何？", "下个月我的财务会有好转吗？", "TA对我的真实看法是什么？", "换一个城市生活是否更好？", "在这个项目上我该坚持还是放手？"];
+        const HEXAGRAM_NAMES = {"111111": "乾为天", "000000": "坤为地", "100010": "水雷屯", "010001": "山水蒙", "111010": "水天需", "010111": "天水讼", "010000": "地水师", "000010": "水地比", "111011": "风小畜", "110111": "天泽履", "111000": "地天泰", "000111": "天地否", "101111": "天火同人", "111101": "火天大有", "001000": "地山谦", "000100": "雷地豫", "100110": "泽雷随", "011001": "山风蛊", "110000": "地泽临", "000011": "风地观", "101001": "火雷噬嗑", "100101": "山火贲", "000001": "山地剥", "100000": "地雷复", "100111": "天雷无妄", "111001": "山天大畜", "100001": "山雷颐", "011110": "泽风大过", "010010": "坎为水", "101101": "离为火", "001110": "泽山咸", "011100": "雷风恒", "001111": "天山遁", "111100": "雷天大壮", "000101": "火地晋", "101000": "地火明夷", "110101": "风火家人", "101011": "火泽睽", "001010": "水山蹇", "010100": "雷水解", "110001": "山泽损", "100011": "风雷益", "111110": "泽天夬", "011111": "天风姤", "011000": "泽地萃", "000110": "地风升", "011010": "泽水困", "010110": "水风井", "101110": "泽火革", "011101": "火风鼎", "100100": "震为雷", "001001": "艮为山", "001011": "风山渐", "110100": "雷泽归妹", "101100": "雷火丰", "001101": "火山旅", "011011": "巽为风", "110110": "兑为泽", "010011": "风水涣", "110010": "水泽节", "110011": "风泽中孚", "001100": "雷山小过", "101010": "水火既济", "010101": "火水未济"};
+
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        function App() {
+            const [step, setStep] = useState(1);
+            const [question, setQuestion] = useState('');
+            const [selectedToolId, setSelectedToolId] = useState('tarot');
+            const [isLoading, setIsLoading] = useState(false);
+            const [isAnalyzing, setIsAnalyzing] = useState(false);
+            const [interpretation, setInterpretation] = useState('');
+            const [interactionState, setInteractionState] = useState('idle');
+            const [tarotIndices, setTarotIndices] = useState([]);
+            const [selectedTarot, setSelectedTarot] = useState([]);
+            const [diceResults, setDiceResults] = useState(null);
+            const [shengbeiResults, setShengbeiResults] = useState(null);
+            const [ichingYao, setIchingYao] = useState([]);
+            const [isCasting, setIsCasting] = useState(false);
+            const [currentCoins, setCurrentCoins] = useState([true, true, true]);
+
+            const resetThought = () => {
+                setQuestion(''); setStep(1); setInteractionState('idle'); setInterpretation('');
+                setSelectedTarot([]); setDiceResults(null); setShengbeiResults(null); setIchingYao([]);
+                setIsLoading(false); setIsAnalyzing(false);
+            };
+
+            const initToolInteraction = useCallback((toolId) => {
+                setInteractionState('interacting');
+                if (toolId === 'tarot') { setTarotIndices([...TAROT_DECK].sort(() => Math.random() - 0.5)); setSelectedTarot([]); }
+                else if (toolId === 'dice') setDiceResults(null);
+                else if (toolId === 'shengbei') setShengbeiResults(null);
+                else if (toolId === 'iching') setIchingYao([]);
+            }, []);
+
+            const handleSelectTarot = async (idxInDeck) => {
+                if (selectedTarot.length >= 3) return;
+                const cardIdx = tarotIndices[idxInDeck];
+                const newCard = { deckIdx: idxInDeck, name: TAROT_NAMES[cardIdx], side: Math.random() > 0.5 ? '正位' : '逆位', flipped: false };
+                const newList = [...selectedTarot, newCard];
+                setSelectedTarot(newList);
+                if (newList.length === 3) {
+                    await sleep(600);
+                    for(let i=0; i<3; i++) {
+                        await sleep(400);
+                        setSelectedTarot(prev => { const u = [...prev]; u[i].flipped = true; return u; });
+                    }
+                    setInteractionState('ready-to-analyze');
+                }
+            };
+
+            const handleGenerateInterpretation = async () => {
+                setIsAnalyzing(true);
+                let resStr = "";
+                if (selectedToolId === 'tarot') resStr = selectedTarot.map((c, i) => `${TOOLS.tarot.slots[i]}:${c.name}(${c.side})`).join(', ');
+                else if (selectedToolId === 'dice') resStr = `星曜:${TOOLS.dice.planets[diceResults.p]} / 领域:${TOOLS.dice.signs[diceResults.s]} / 宫位:${diceResults.h + 1}宫`;
+                else if (selectedToolId === 'shengbei') resStr = shengbeiResults.b1 !== shengbeiResults.b2 ? "圣杯" : (shengbeiResults.b1 ? "笑杯" : "阴杯");
+                else if (selectedToolId === 'iching') resStr = `卦象:${HEXAGRAM_NAMES[ichingYao.map(y=>(y.type.includes('阳')?'1':'0')).join('')]}`;
+
+                try {
+                    const response = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ parts: [{ text: `问题：${question}\n结果：${resStr}\n请作为朋友般的疗愈师。第一段先给出一句温柔的判语。接着分“1. 结果解析”和“2. 行动建议”两部分回答。字数控制在250字以内。` }] }],
+                            systemInstruction: { parts: [{ text: "你是资深星空智者。直接回答，禁止 Markdown。禁止使用“亲爱的”和“您”。" }] }
+                        })
+                    });
+                    const data = await response.json();
+                    setInterpretation(data.candidates?.[0]?.content?.parts?.[0]?.text || "宇宙已回响。");
+                    setInteractionState('completed');
+                } catch (e) { setInterpretation("能量涟漪波动，请重新开启感应。"); }
+                finally { setIsAnalyzing(false); }
+            };
+
+            const castSingleYao = async () => {
+                if (isCasting || ichingYao.length >= 6) return;
+                setIsCasting(true);
+                let toss = [];
+                for (let i = 0; i < 10; i++) {
+                    toss = [Math.random() > 0.5, Math.random() > 0.5, Math.random() > 0.5];
+                    setCurrentCoins(toss); await sleep(60);
+                }
+                const h = toss.filter(c => c).length;
+                let type = h === 3 ? '老阳' : h === 0 ? '老阴' : h === 2 ? '少阴' : '少阳';
+                setIchingYao(prev => {
+                    const next = [...prev, { type, coins: toss }];
+                    if (next.length === 6) setInteractionState('ready-to-analyze');
+                    return next;
+                });
+                setIsCasting(false);
+            };
+
+            return (
+                <div className="h-screen w-full bg-[#03030d] text-[#f1f5f9] flex flex-col items-center justify-center p-4 overflow-hidden relative font-sans">
+                    <div className="absolute inset-0 pointer-events-none overflow-hidden z-0">
+                        <div className="absolute inset-0 bg-gradient-to-b from-[#050515] via-[#0d0d26] to-[#050515]"></div>
+                        <div className="star-field"></div>
+                    </div>
+
+                    <div className="w-full max-w-xl flex flex-col items-center gap-4 z-10 h-full justify-center">
+                        <header className={`text-center transition-all duration-1000 ${interpretation ? 'h-0 opacity-0' : 'mb-2'}`}>
+                            <h1 className="text-2xl font-extralight tracking-[0.4em] text-white uppercase drop-shadow-lg">让宇宙告诉你答案</h1>
+                        </header>
+
+                        <div className={`w-full bg-[#0a0a20]/50 border border-white/10 rounded-[48px] backdrop-blur-xl shadow-2xl relative flex flex-col transition-all duration-700 ${interpretation ? 'h-[90vh]' : 'h-[80vh]'} overflow-hidden`}>
+                            <div className="flex-1 p-6 md:p-10 flex flex-col relative overflow-hidden h-full">
+                                {step === 1 && (
+                                    <div className="flex flex-col h-full animate-in fade-in slide-in-from-bottom-6">
+                                        <div className="flex-1 flex flex-col justify-center space-y-6">
+                                            <textarea className="w-full bg-black/30 border border-white/5 rounded-[32px] p-8 text-center text-xl font-extralight focus:border-indigo-400/60 transition-all outline-none h-[25vh] leading-relaxed" placeholder="请输入你的问题..." value={question} onChange={(e)=>setQuestion(e.target.value)} />
+                                        </div>
+                                        <button disabled={!question.trim()} onClick={()=>setStep(2)} className="w-full h-20 bg-white text-black rounded-full font-bold text-lg tracking-[0.4em] transition-all active:scale-95 shadow-xl mt-4 flex items-center justify-center">开始提问 <ChevronRight /></button>
+                                    </div>
+                                )}
+
+                                {step === 2 && (
+                                    <div className="flex flex-col h-full animate-in fade-in">
+                                        <div className="flex-1 flex flex-col justify-center gap-6">
+                                            <h2 className="text-lg font-light text-white/90 italic text-center px-4">“ {question} ”</h2>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                {Object.values(TOOLS).map(t => (
+                                                    <button key={t.id} onClick={()=>setSelectedToolId(t.id)} className={`py-6 rounded-[36px] border transition-all flex flex-col items-center gap-2 ${selectedToolId === t.id ? 'border-white/60 bg-white/10' : 'border-white/5 opacity-40'}`}>
+                                                        <t.icon size={28} /> <span className="text-sm tracking-widest">{t.name}</span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <button onClick={()=>{initToolInteraction(selectedToolId); setStep(3);}} className="w-full h-20 bg-indigo-600 text-white rounded-full font-bold text-lg tracking-[0.4em] mt-6">开始占卜</button>
+                                    </div>
+                                )}
+
+                                {step === 3 && (
+                                    <div className="flex flex-col items-center flex-1 w-full overflow-hidden">
+                                        {selectedToolId === 'tarot' && (
+                                            <div className="w-full flex flex-col items-center justify-center flex-1">
+                                                <div className="flex justify-center gap-4 w-full">
+                                                    {[0,1,2].map(i => (
+                                                        <div key={i} className="flex flex-col gap-2 items-center">
+                                                            <div onClick={() => !selectedTarot[i] && handleSelectTarot(Math.floor(Math.random()*78))} className="w-24 h-36 md:w-28 md:h-44 rounded-xl border border-indigo-500/20 bg-black/50 perspective-1000 relative">
+                                                                {selectedTarot[i] ? (
+                                                                    <div className={`w-full h-full transition-all duration-1000 preserve-3d ${selectedTarot[i].flipped ? 'rotate-y-180' : ''}`}>
+                                                                        <div className="absolute inset-0 backface-hidden flex items-center justify-center bg-[#1a1a45] rounded-xl"><Sparkles className="text-white/20" /></div>
+                                                                        <div className="absolute inset-0 backface-hidden rotate-y-180 bg-[#121235] border-2 border-amber-600/30 rounded-xl p-2 flex flex-col justify-around items-center text-center">
+                                                                            <span className="text-[10px] text-amber-500">{TOOLS.tarot.slots[i]}</span>
+                                                                            <div className="text-sm text-amber-50">{selectedTarot[i].name}</div>
+                                                                            <div className="text-[10px] text-orange-200">{selectedTarot[i].side}</div>
+                                                                        </div>
+                                                                    </div>
+                                                                ) : <div className="absolute inset-0 flex items-center justify-center opacity-20"><Eye /></div>}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {selectedToolId === 'dice' && (
+                                            <div className="flex flex-col items-center justify-center flex-1 gap-10">
+                                                <div className="flex gap-10">
+                                                    {[0,1,2].map(i => (
+                                                        <div key={i} className="relative w-20 h-20 flex items-center justify-center">
+                                                            <div className={`orb-halo ${isLoading ? 'orb-halo-spinning active' : ''}`}></div>
+                                                            <div className="orb-inner">
+                                                                {diceResults && !isLoading ? <div className="text-xs text-center">{i===0?TOOLS.dice.planets[diceResults.p]:i===1?TOOLS.dice.signs[diceResults.s]:diceResults.h+1+'宫'}</div> : '●'}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <button onClick={async ()=>{setIsLoading(true); await sleep(1500); setDiceResults({p:Math.floor(Math.random()*12), s:Math.floor(Math.random()*12), h:Math.floor(Math.random()*12)}); setIsLoading(false); setInteractionState('ready-to-analyze');}} className="px-10 py-4 bg-white/10 border border-white/20 rounded-full">拨转星轨</button>
+                                            </div>
+                                        )}
+
+                                        {selectedToolId === 'shengbei' && (
+                                            <div className="flex flex-col items-center justify-center flex-1 gap-10">
+                                                <div className="flex gap-12">
+                                                    {[1,2].map(i => <div key={i} className={`shengbei-3d ${isLoading ? 'shengbei-tossing' : (shengbeiResults ? (shengbeiResults[`b${i}`] ? 'shengbei-flat' : 'shengbei-convex') : '')}`}><div className="shengbei-top"></div></div>)}
+                                                </div>
+                                                <button onClick={async ()=>{setIsLoading(true); await sleep(1500); setShengbeiResults({b1:Math.random()>0.5, b2:Math.random()>0.5}); setIsLoading(false); setInteractionState('ready-to-analyze');}} className="px-10 py-4 bg-white/10 border border-white/20 rounded-full">抛掷感应</button>
+                                            </div>
+                                        )}
+
+                                        {selectedToolId === 'iching' && (
+                                            <div className="flex flex-col items-center justify-center flex-1 gap-6">
+                                                <div className="flex flex-col-reverse gap-2">
+                                                    {Array.from({length:6}).map((_, i) => (
+                                                        <div key={i} className={`h-2 w-48 rounded-full ${ichingYao[i] ? (ichingYao[i].type.includes('阳') ? 'bg-indigo-300' : 'bg-indigo-900') : 'border border-dashed border-white/20'}`}></div>
+                                                    ))}
+                                                </div>
+                                                {ichingYao.length < 6 && <button onClick={castSingleYao} disabled={isCasting} className="px-10 py-4 bg-indigo-600 rounded-full">起爻 ({ichingYao.length}/6)</button>}
+                                            </div>
+                                        )}
+
+                                        {interactionState === 'ready-to-analyze' && !isAnalyzing && (
+                                            <div className="w-full flex flex-col items-center gap-4 mt-4">
+                                                <button onClick={handleGenerateInterpretation} className="w-full h-20 bg-white text-black rounded-full font-bold tracking-[0.6em]">查看占卜结果</button>
+                                            </div>
+                                        )}
+
+                                        {(interpretation || isAnalyzing) && (
+                                            <div className="w-full flex-1 flex flex-col overflow-hidden mt-2 relative">
+                                                {isAnalyzing && <div className="absolute inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center text-white/50 tracking-[1em]">连接星空...</div>}
+                                                <div className="flex-1 bg-black/40 border border-white/5 rounded-[40px] p-8 overflow-y-auto custom-scrollbar">
+                                                    <div className="text-lg font-extralight leading-loose text-indigo-50/90 whitespace-pre-wrap">{interpretation}</div>
+                                                </div>
+                                                <button onClick={resetThought} className="mt-4 flex items-center justify-center gap-2 text-sm text-white/20 hover:text-white transition-all py-2"><RotateCcw size={16}/> 重新开启感应</button>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <footer className="fixed bottom-4 opacity-20 text-[10px] tracking-[2em] uppercase w-full text-center">Insight · Harmony · Future</footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
