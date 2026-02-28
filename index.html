@@ -170,8 +170,8 @@
 
   <!-- Load React and dependencies via ESM CDN -->
   <script type="module">
-    import React, { useState, useCallback } from "https://esm.sh/react@18.3.1?bundle";
-import { createRoot } from "https://esm.sh/react-dom@18.3.1/client?bundle";
+import * as React from "https://esm.sh/react@18.3.1";
+import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
 import {
   RotateCcw,
   ChevronRight,
@@ -183,7 +183,10 @@ import {
   Sparkles,
   Globe,
   Undo2
-} from "https://esm.sh/lucide-react@0.469.0?bundle";
+} from "https://esm.sh/lucide-react@0.469.0";
+
+// ✅ 让 hooks 来自同一份 React
+const { useState, useEffect, useCallback, useRef } = React;
 
     // === 配置与常量 ===
     const apiKey = "";
